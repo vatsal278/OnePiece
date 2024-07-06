@@ -15,3 +15,7 @@ environments/__pycache__/__init__.cpython-38.pyc
 agents/__pycache__/luffy.cpython-38.pyc
 requirements.txt
 data_memmap.dat
+.pth
+checkpoints/checkpoint_0.pth
+.csv
+.pyc
