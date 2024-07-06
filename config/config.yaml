@@ -1,5 +1,5 @@
 env:
-  data_file: './data/binance_klines_pt8s.csv'
+  data_file: './data/sample.csv'
   initial_balance: 1000000
   commission: 0.003
   slippage: 0
@@ -15,9 +15,11 @@ agent:
   entropy_coef: 0.01
   value_loss_coef: 0.5
   dropout_rate: 0.2
-  batch_size: 32
+  buffer_capacity: 10000
+  batch_size: 64
 
 trainer:
   num_episodes: 100
   checkpoint_interval: 10
   checkpoint_dir: './checkpoints'
+  memory_file: './memory.pt'

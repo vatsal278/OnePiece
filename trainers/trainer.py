@@ -2,12 +2,14 @@ import os
 import numpy as np
 
 class Trainer:
-    def __init__(self, env, agent, num_episodes, checkpoint_interval, checkpoint_dir):
+    def __init__(self, env, agent, num_episodes, checkpoint_interval, checkpoint_dir, memory_file):
         self.env = env
         self.agent = agent
         self.num_episodes = num_episodes
         self.checkpoint_interval = checkpoint_interval
         self.checkpoint_dir = checkpoint_dir
+        self.memory_file = memory_file
+        self.agent.load_memory_from_disk(self.memory_file)  # Load memory at the start
 
     def train(self):
         if not os.path.exists(self.checkpoint_dir):
@@ -26,6 +28,10 @@ class Trainer:
                 self.agent.update_position(action)
                 state = next_state
                 total_reward += reward
+                if (t + 1) % 1000 == 0:
+                    self.agent.save_memory_to_disk(self.memory_file)
+                    self.agent.clear_memory()
+
                 if done:
                     break
 

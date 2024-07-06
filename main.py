@@ -31,6 +31,7 @@ if __name__ == "__main__":
     trainer = Trainer(env, agent, 
                       num_episodes=config['trainer']['num_episodes'], 
                       checkpoint_interval=config['trainer']['checkpoint_interval'], 
-                      checkpoint_dir=config['trainer']['checkpoint_dir'])
+                      checkpoint_dir=config['trainer']['checkpoint_dir'],
+                      memory_file=config['trainer']['memory_file'])
 
     trainer.train()

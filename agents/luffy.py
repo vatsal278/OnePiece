@@ -2,9 +2,10 @@ import torch
 import torch.optim as optim
 from torch.distributions import Categorical
 import numpy as np
+import os
 
 class PPOAgent:
-    def __init__(self, agent_id, observation_space, action_space, model, lr=0.001, gamma=0.90, lam=0.90, eps_clip=0.2, K_epochs=4):
+    def __init__(self, agent_id, observation_space, action_space, model, lr=0.001, gamma=0.90, lam=0.90, eps_clip=0.2, K_epochs=4, buffer_capacity=10000, batch_size=64):
         self.agent_id = agent_id
         self.observation_space = observation_space
         self.action_space = action_space
@@ -18,6 +19,8 @@ class PPOAgent:
         self.lam = lam
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
+        self.buffer_capacity = buffer_capacity
+        self.batch_size = batch_size
 
         self.memory = {
             'states': [],
@@ -27,8 +30,10 @@ class PPOAgent:
             'next_states': [],
             'dones': []
         }
-
         self.current_position = None
+        self.reward_history = []
+        self.loss_history = []
+        self.memory_counter = 0
 
     def observe(self, state):
         state_tensor = torch.tensor(state, dtype=torch.float32).to(self.device).unsqueeze(0)
@@ -76,6 +81,11 @@ class PPOAgent:
         self.memory['rewards'].append(reward)
         self.memory['next_states'].append(next_state)
         self.memory['dones'].append(done)
+        self.memory_counter += 1
+
+        if self.memory_counter >= self.buffer_capacity:
+            self.save_memory_to_disk("memory.pt")
+            self.clear_memory()
 
     def compute_advantages(self, rewards, values, next_values, dones):
         advantages = []
@@ -94,6 +104,9 @@ class PPOAgent:
 
     def learn(self):
         # Collect and prepare memory data
+        if len(self.memory['states']) == 0:
+            return 0  # No data to learn from
+
         states = torch.cat(self.memory['states']).to(self.device)
         actions = torch.tensor(self.memory['actions']).to(self.device)
         rewards = torch.tensor(self.memory['rewards']).to(self.device)
@@ -107,25 +120,25 @@ class PPOAgent:
 
         losses = []
         for _ in range(self.K_epochs):
-            logits = self.model(states)
-            action_probs = torch.softmax(logits, dim=-1)
-            dist = Categorical(action_probs)
-            log_probs = dist.log_prob(actions)
-            ratios = torch.exp(log_probs - old_log_probs)
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
-            loss = -torch.min(surr1, surr2).mean()
+            for batch in self.sample_batches():
+                states_batch, actions_batch, log_probs_batch, advantages_batch = batch
+                logits = self.model(states_batch)
+                action_probs = torch.softmax(logits, dim=-1)
+                dist = Categorical(action_probs)
+                log_probs = dist.log_prob(actions_batch)
+                ratios = torch.exp(log_probs - log_probs_batch)
+                surr1 = ratios * advantages_batch
+                surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages_batch
+                loss = -torch.min(surr1, surr2).mean()
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
 
-            # Update old_log_probs for the next iteration
-            old_log_probs = log_probs.detach()
-
-            losses.append(loss.item())
+                losses.append(loss.item())
         
         avg_loss = np.mean(losses)
+        self.loss_history.append(avg_loss)
 
         # Clear memory after learning
         self.memory = {
@@ -143,8 +156,6 @@ class PPOAgent:
         current_lr = self.optimizer.param_groups[0]['lr']
         print(f"Episode {episode} - Total Reward: {total_reward:.2f}, Average Loss: {avg_loss:.5f}, Learning Rate: {current_lr:.5f}")
 
-
-
     def save_checkpoint(self, filepath):
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
@@ -158,3 +169,63 @@ class PPOAgent:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         print(f"Checkpoint loaded from {filepath}")
+
+    def save_memory_to_disk(self, filepath):
+        checkpoint = {}
+        if self.memory['states']:
+            checkpoint['states'] = torch.cat(self.memory['states'])
+        if self.memory['actions']:
+            checkpoint['actions'] = torch.tensor(self.memory['actions'])
+        if self.memory['log_probs']:
+            checkpoint['log_probs'] = torch.cat(self.memory['log_probs'])
+        if self.memory['rewards']:
+            checkpoint['rewards'] = torch.tensor(self.memory['rewards'])
+        if self.memory['next_states']:
+            checkpoint['next_states'] = torch.cat(self.memory['next_states'])
+        if self.memory['dones']:
+            checkpoint['dones'] = torch.tensor(self.memory['dones'])
+        torch.save(checkpoint, filepath)
+        print(f"Memory saved to {filepath}")
+
+    def load_memory_from_disk(self, filepath):
+        if os.path.exists(filepath):
+            checkpoint = torch.load(filepath)
+            if 'states' in checkpoint:
+                self.memory['states'] = list(checkpoint['states'])
+            if 'actions' in checkpoint:
+                self.memory['actions'] = list(checkpoint['actions'].numpy())
+            if 'log_probs' in checkpoint:
+                self.memory['log_probs'] = list(checkpoint['log_probs'])
+            if 'rewards' in checkpoint:
+                self.memory['rewards'] = list(checkpoint['rewards'].numpy())
+            if 'next_states' in checkpoint:
+                self.memory['next_states'] = list(checkpoint['next_states'])
+            if 'dones' in checkpoint:
+                self.memory['dones'] = list(checkpoint['dones'].numpy())
+            print(f"Memory loaded from {filepath}")
+        else:
+            print(f"No memory file found at {filepath}")
+
+    def clear_memory(self):
+        self.memory = {
+            'states': [],
+            'actions': [],
+            'log_probs': [],
+            'rewards': [],
+            'next_states': [],
+            'dones': []
+        }
+        self.memory_counter = 0
+
+    def sample_batches(self):
+        num_samples = len(self.memory['states'])
+        indices = np.arange(num_samples)
+        np.random.shuffle(indices)
+        for start_idx in range(0, num_samples, self.batch_size):
+            end_idx = min(start_idx + self.batch_size, num_samples)
+            batch_indices = indices[start_idx:end_idx]
+            states_batch = torch.cat([self.memory['states'][i] for i in batch_indices]).to(self.device)
+            actions_batch = torch.tensor([self.memory['actions'][i] for i in batch_indices]).to(self.device)
+            log_probs_batch = torch.cat([self.memory['log_probs'][i] for i in batch_indices]).to(self.device)
+            advantages_batch = torch.tensor([self.memory['rewards'][i] for i in batch_indices]).to(self.device)
+            yield states_batch, actions_batch, log_probs_batch, advantages_batch
