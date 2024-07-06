@@ -1,0 +1,23 @@
+env:
+  data_file: './data/binance_klines_pt8s.csv'
+  initial_balance: 1000000
+  commission: 0.003
+  slippage: 0
+
+agent:
+  model_type: 'StackedLSTMWithAttention'
+  hidden_size: 64
+  lr: 0.001
+  gamma: 0.90
+  lam: 0.90
+  eps_clip: 0.2
+  K_epochs: 4
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  dropout_rate: 0.2
+  batch_size: 32
+
+trainer:
+  num_episodes: 100
+  checkpoint_interval: 10
+  checkpoint_dir: './checkpoints'
