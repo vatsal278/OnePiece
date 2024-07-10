@@ -28,12 +28,6 @@ class Trainer:
                 self.agent.update_position(action)
                 state = next_state
                 total_reward += reward
-                if (t + 1) % 1000 == 0:
-                    self.agent.save_memory_to_disk(self.memory_file)
-                    self.agent.clear_memory()
-
-                if done:
-                    break
 
             avg_loss = self.agent.learn()
             self.agent.reward_history.append(total_reward)

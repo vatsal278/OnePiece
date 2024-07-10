@@ -5,7 +5,7 @@ import numpy as np
 import os
 
 class PPOAgent:
-    def __init__(self, agent_id, observation_space, action_space, model, lr=0.001, gamma=0.90, lam=0.90, eps_clip=0.2, K_epochs=4, buffer_capacity=10000, batch_size=64):
+    def __init__(self, agent_id, observation_space, action_space, model, lr=0.001, gamma=0.90, lam=0.90, eps_clip=0.2, K_epochs=4, buffer_capacity=100000, batch_size=64):
         self.agent_id = agent_id
         self.observation_space = observation_space
         self.action_space = action_space
@@ -28,7 +28,8 @@ class PPOAgent:
             'log_probs': [],
             'rewards': [],
             'next_states': [],
-            'dones': []
+            'dones': [],
+            'advantages': []  # Adding advantages to memory
         }
         self.current_position = None
         self.reward_history = []
@@ -36,7 +37,9 @@ class PPOAgent:
         self.memory_counter = 0
 
     def observe(self, state):
-        state_tensor = torch.tensor(state, dtype=torch.float32).to(self.device).unsqueeze(0)
+        state_tensor = torch.tensor(state, dtype=torch.float32).to(self.device)
+        if state_tensor.dim() == 1:
+            state_tensor = state_tensor.unsqueeze(0)
         return state_tensor
 
     def act(self, observation, epsilon=0.1):
@@ -77,7 +80,7 @@ class PPOAgent:
     def store_transition(self, state, action, log_prob, reward, next_state, done):
         self.memory['states'].append(state)
         self.memory['actions'].append(action)
-        self.memory['log_probs'].append(log_prob)
+        self.memory['log_probs'].append(log_prob.unsqueeze(0) if log_prob.dim() == 0 else log_prob)
         self.memory['rewards'].append(reward)
         self.memory['next_states'].append(next_state)
         self.memory['dones'].append(done)
@@ -107,16 +110,19 @@ class PPOAgent:
         if len(self.memory['states']) == 0:
             return 0  # No data to learn from
 
-        states = torch.cat(self.memory['states']).to(self.device)
+        states = torch.cat([s.unsqueeze(0) if s.dim() == 1 else s for s in self.memory['states']]).to(self.device)
         actions = torch.tensor(self.memory['actions']).to(self.device)
         rewards = torch.tensor(self.memory['rewards']).to(self.device)
-        next_states = torch.cat(self.memory['next_states']).to(self.device)
+        next_states = torch.cat([s.unsqueeze(0) if s.dim() == 1 else s for s in self.memory['next_states']]).to(self.device)
         dones = torch.tensor(self.memory['dones'], dtype=torch.float32).to(self.device)
 
         values = self.model(states)
         next_values = self.model(next_states)
-        old_log_probs = torch.cat(self.memory['log_probs']).to(self.device)
+        old_log_probs = torch.cat([lp.unsqueeze(0) if lp.dim() == 0 else lp for lp in self.memory['log_probs']]).to(self.device)
         advantages = self.compute_advantages(rewards, values, next_values, dones)
+
+        # Adding computed advantages to memory
+        self.memory['advantages'] = advantages.tolist()
 
         losses = []
         for _ in range(self.K_epochs):
@@ -147,7 +153,8 @@ class PPOAgent:
             'log_probs': [],
             'rewards': [],
             'next_states': [],
-            'dones': []
+            'dones': [],
+            'advantages': []  # Clear advantages as well
         }
         
         return avg_loss
@@ -159,7 +166,9 @@ class PPOAgent:
     def save_checkpoint(self, filepath):
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict()
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'loss_history': self.loss_history,
+            'reward_history': self.reward_history
         }
         torch.save(checkpoint, filepath)
         print(f"Checkpoint saved at {filepath}")
@@ -168,22 +177,26 @@ class PPOAgent:
         checkpoint = torch.load(filepath)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.loss_history = checkpoint.get('loss_history', [])
+        self.reward_history = checkpoint.get('reward_history', [])
         print(f"Checkpoint loaded from {filepath}")
 
     def save_memory_to_disk(self, filepath):
         checkpoint = {}
         if self.memory['states']:
-            checkpoint['states'] = torch.cat(self.memory['states'])
+            checkpoint['states'] = torch.cat([s.unsqueeze(0) if s.dim() == 1 else s for s in self.memory['states']])
         if self.memory['actions']:
             checkpoint['actions'] = torch.tensor(self.memory['actions'])
         if self.memory['log_probs']:
-            checkpoint['log_probs'] = torch.cat(self.memory['log_probs'])
+            checkpoint['log_probs'] = torch.cat([lp.unsqueeze(0) if lp.dim() == 0 else lp for lp in self.memory['log_probs']])
         if self.memory['rewards']:
             checkpoint['rewards'] = torch.tensor(self.memory['rewards'])
         if self.memory['next_states']:
-            checkpoint['next_states'] = torch.cat(self.memory['next_states'])
+            checkpoint['next_states'] = torch.cat([s.unsqueeze(0) if s.dim() == 1 else s for s in self.memory['next_states']])
         if self.memory['dones']:
             checkpoint['dones'] = torch.tensor(self.memory['dones'])
+        if self.memory['advantages']:
+            checkpoint['advantages'] = torch.tensor(self.memory['advantages'])
         torch.save(checkpoint, filepath)
         print(f"Memory saved to {filepath}")
 
@@ -202,6 +215,8 @@ class PPOAgent:
                 self.memory['next_states'] = list(checkpoint['next_states'])
             if 'dones' in checkpoint:
                 self.memory['dones'] = list(checkpoint['dones'].numpy())
+            if 'advantages' in checkpoint:
+                self.memory['advantages'] = list(checkpoint['advantages'].numpy())
             print(f"Memory loaded from {filepath}")
         else:
             print(f"No memory file found at {filepath}")
@@ -213,19 +228,19 @@ class PPOAgent:
             'log_probs': [],
             'rewards': [],
             'next_states': [],
-            'dones': []
+            'dones': [],
+            'advantages': []
         }
         self.memory_counter = 0
 
     def sample_batches(self):
         num_samples = len(self.memory['states'])
-        indices = np.arange(num_samples)
-        np.random.shuffle(indices)
+        indices = np.random.permutation(num_samples)
         for start_idx in range(0, num_samples, self.batch_size):
             end_idx = min(start_idx + self.batch_size, num_samples)
             batch_indices = indices[start_idx:end_idx]
-            states_batch = torch.cat([self.memory['states'][i] for i in batch_indices]).to(self.device)
+            states_batch = torch.cat([self.memory['states'][i].unsqueeze(0) if self.memory['states'][i].dim() == 1 else self.memory['states'][i] for i in batch_indices]).to(self.device)
             actions_batch = torch.tensor([self.memory['actions'][i] for i in batch_indices]).to(self.device)
-            log_probs_batch = torch.cat([self.memory['log_probs'][i] for i in batch_indices]).to(self.device)
-            advantages_batch = torch.tensor([self.memory['rewards'][i] for i in batch_indices]).to(self.device)
+            log_probs_batch = torch.cat([self.memory['log_probs'][i].unsqueeze(0) if self.memory['log_probs'][i].dim() == 0 else self.memory['log_probs'][i] for i in batch_indices]).to(self.device)
+            advantages_batch = torch.tensor([self.memory['advantages'][i] for i in batch_indices]).to(self.device)
             yield states_batch, actions_batch, log_probs_batch, advantages_batch
